@@ -18,7 +18,7 @@ This first version draws in Claude Code Desktop only.
 In Claude Code, run:
 
 ```
-/plugin install quizwhile --marketplace EdiProdan/quizwhile
+/plugin install quizwhile --marketplace ediprodan/quizwhile
 ```
 
 Then start a new session. The quiz is on by default.
@@ -32,19 +32,6 @@ Then start a new session. The quiz is on by default.
 
 - Claude Code Desktop, recent enough to load mods (function hooks)
 - Each generated question is a small Haiku call on your account
-
-## Developing
-
-Load it from a checkout by naming the folder in `CLAUDE_CODE_PLUGIN_DIRS` (in
-the `env` block of `~/.claude/settings.json`), then:
-
-```bash
-claude plugin validate .
-```
-
-```bash
-claude plugin test .
-```
 
 ## Layout
 
