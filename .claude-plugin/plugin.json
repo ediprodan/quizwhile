@@ -1,5 +1,12 @@
 {
   "name": "quizwhile",
   "version": "0.1.0",
-  "description": "A minimalist multiple-choice quiz above the prompt while Claude works, about what Claude is building"
+  "description": "A minimalist multiple-choice quiz above the prompt while Claude works, about what Claude is building",
+  "author": {
+    "name": "EdiProdan",
+    "url": "https://github.com/EdiProdan"
+  },
+  "homepage": "https://github.com/EdiProdan/quizwhile",
+  "repository": "https://github.com/EdiProdan/quizwhile",
+  "license": "MIT"
 }

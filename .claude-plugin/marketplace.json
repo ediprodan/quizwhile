@@ -1,0 +1,6 @@
+{
+  "name": "quizwhile",
+  "description": "A multiple-choice quiz above the prompt while Claude works",
+  "owner": { "name": "EdiProdan" },
+  "plugins": [{ "name": "quizwhile", "source": "./" }]
+}
