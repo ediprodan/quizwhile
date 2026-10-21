@@ -4,13 +4,15 @@
 
 import type { EngineInterface, Register } from 'claude-code'
 
-import { SYSTEM, bankFor, parseQuiz, type Quiz } from './quiz'
+import { SYSTEM, isSourceFile, parseQuiz, type Quiz } from './quiz'
 
 const DROP_IN_DELAY_MS = 2000
 const GENERATE_TIMEOUT_MS = 15000
 const MAX_FILES = 10
 const MAX_SNIPPETS = 4
 const MAX_SNIPPET_CHARS = 1200
+// How much of a file picked from the project the model is shown
+const SAMPLE_LINES = 60
 const MAX_MISSED = 20
 // How often a missed question comes back in place of a new one
 const REVIEW_CHANCE = 0.3
@@ -36,8 +38,11 @@ let wasRight = false
 let upcoming: Promise<Quiz | null> | null = null
 let dropIn: { cancel: () => void } | null = null
 
-// The code Claude has read or written this session, for the model that
-// writes questions: kept across prompts so a new turn starts with context
+// The project's root: only code beneath it is asked about
+let root = ''
+// The project's code Claude has read or written this session, else a file
+// picked from the project, for the model that writes questions: kept across
+// prompts so a new turn starts with context
 let files: string[] = []
 let snippets: { path: string; code: string }[] = []
 let missed: Quiz[] = []
@@ -54,9 +59,39 @@ function reset() {
   wasRight = false
   upcoming = null
   dropIn = null
+  root = ''
   files = []
   snippets = []
   recentTopics.length = 0
+}
+
+function isInProject(path: string) {
+  return root !== '' && path.startsWith(root + '/')
+}
+
+// Missed questions are kept per project, so none comes back in another one
+function missedKey() {
+  return 'missed:' + root
+}
+
+// With none of the project's code seen yet, one of its tracked source files
+// is read instead, from a random line so a long file is not always its top
+async function sampleProject($: EngineInterface) {
+  if (!root) return
+  try {
+    const listed = await $.process.run(['git', 'ls-files'], { cwd: root })
+    if (listed.exitCode !== 0) return
+    const tracked = listed.stdout.split('\n').filter(isSourceFile)
+    const pick = tracked[Math.floor(Math.random() * tracked.length)]
+    if (!pick) return
+    const path = root + '/' + pick
+    const lines = String(await $.fs.read(path)).split('\n')
+    const start = lines.length > SAMPLE_LINES ? Math.floor(Math.random() * (lines.length - SAMPLE_LINES)) : 0
+    noteFile(path)
+    noteCode(path, lines.slice(start, start + SAMPLE_LINES).join('\n'))
+  } catch (error) {
+    $.ui.log('quizwhile could not read the project: ' + String(error), { to: 'debug' })
+  }
 }
 
 function show($: EngineInterface, next: Phase) {
@@ -75,8 +110,10 @@ function noteCode(path: string, code: string) {
   snippets = [...snippets.filter((s) => s.path !== path), snippet].slice(-MAX_SNIPPETS)
 }
 
-// Questions are only about code, so with none seen yet the bank answers
+// Questions are only about the project's own code, so with none to be had
+// there is no question
 async function generate($: EngineInterface): Promise<Quiz | null> {
+  if (snippets.length === 0) await sampleProject($)
   if (snippets.length === 0) return null
   const prompt = [
     `Files in this project: ${files.join(', ')}`,
@@ -94,18 +131,41 @@ async function generate($: EngineInterface): Promise<Quiz | null> {
       effort: 'low',
       timeoutMs: GENERATE_TIMEOUT_MS,
     })
-    return r.isAnswered ? parseQuiz(r.text) : null
+    const quiz = r.isAnswered ? parseQuiz(r.text) : null
+    if (!quiz) return null
+    // Only a file the code came from can be opened; else the newest one
+    const known = snippets.some((s) => s.path === quiz.path)
+    return { ...quiz, path: known ? quiz.path : snippets.at(-1)?.path }
   } catch (error) {
     $.ui.log('quizwhile could not write a question: ' + String(error), { to: 'debug' })
     return null
   }
 }
 
-function fromBank(): Quiz {
-  const bank = bankFor(files)
-  const fresh = bank.filter((q) => !recentTopics.includes(q.topic))
-  const pool = fresh.length ? fresh : bank
-  return pool[Math.floor(Math.random() * pool.length)]!
+// Opens the question's file in Zed at the anchor's line, else in the
+// default app for the file
+async function openFile($: EngineInterface, quiz: Quiz) {
+  if (!quiz.path) return
+  let target = quiz.path
+  const anchor = quiz.anchor?.trim()
+  if (anchor) {
+    try {
+      const text = await $.fs.read(quiz.path)
+      const line = String(text).split('\n').findIndex((l) => l.includes(anchor))
+      if (line >= 0) target += ':' + (line + 1)
+    } catch {
+      // Opened at the top
+    }
+  }
+  // The desktop app's PATH may leave out Homebrew's folder
+  for (const argv of [['zed', target], ['/opt/homebrew/bin/zed', target], ['open', quiz.path]]) {
+    try {
+      if ((await $.process.run(argv)).exitCode === 0) return
+    } catch {
+      // Not installed there; try the next
+    }
+  }
+  $.ui.toast('quizwhile could not open ' + quiz.path)
 }
 
 // One that comes back empty is dropped, so a later call can try again with
@@ -117,24 +177,25 @@ function prefetch($: EngineInterface) {
   })
 }
 
-async function nextQuestion($: EngineInterface): Promise<Quiz> {
+async function nextQuestion($: EngineInterface): Promise<Quiz | null> {
   if (missed.length && Math.random() < REVIEW_CHANCE) {
     const [first, ...rest] = missed
     missed = rest
-    await $.store.set('missed', missed)
+    await $.store.set(missedKey(), missed)
     isReview = true
     return first!
   }
   isReview = false
   const pending = upcoming ?? generate($)
   upcoming = null
-  const made = await pending
-  return made ?? fromBank()
+  return pending
 }
 
 async function ask($: EngineInterface) {
-  current = await nextQuestion($)
-  recentTopics.push(current.topic)
+  const quiz = await nextQuestion($)
+  if (!quiz) return
+  current = quiz
+  recentTopics.push(quiz.topic)
   if (recentTopics.length > 6) recentTopics.shift()
   // Claude may have finished or needed the person while the question was written
   if (!isTurnRunning || phase === 'paused') return
@@ -151,7 +212,7 @@ async function answer($: EngineInterface, choice: number) {
     show($, 'wrong')
     if (!isReview) {
       missed = [...missed, current].slice(-MAX_MISSED)
-      await $.store.set('missed', missed)
+      await $.store.set(missedKey(), missed)
     }
   }
 }
@@ -183,7 +244,8 @@ export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     reset()
     isOn = (await $.store.get('isOff')) !== true
-    const stored = await $.store.get('missed')
+    root = (await $.session.root()).replace(/\/+$/, '')
+    const stored = await $.store.get(missedKey())
     missed = Array.isArray(stored) ? (stored as Quiz[]) : []
     await $.command.register({
       name: 'quizwhile',
@@ -235,7 +297,9 @@ export const register: Register = (on) => {
       if (e.tool === 'AskUserQuestion') needsYou($)
     }
     const input = e as unknown as Record<string, unknown>
-    const path = !e.agentId && typeof input.file_path === 'string' ? input.file_path : null
+    // Only the project's own code: scratch files and other folders are not asked about
+    const filePath = typeof input.file_path === 'string' ? input.file_path : null
+    const path = !e.agentId && filePath && isInProject(filePath) && isSourceFile(filePath) ? filePath : null
     const result = await next(e)
     if (path) {
       noteFile(path)
@@ -325,7 +389,12 @@ export const register: Register = (on) => {
           <Markdown text={quiz.explanation} />
           <Box justifyContent="space-between" alignItems="center">
             <Text dimColor>{wasRight || isReview ? '' : "You'll see this one again later"}</Text>
-            <Button key="next" label="Next question" plain onPress={() => void moveOn($)} />
+            <Box gap={1}>
+              {quiz.path ? (
+                <Button key="open" label={`Open ${quiz.path.split('/').pop()}`} plain onPress={() => void openFile($, quiz)} />
+              ) : null}
+              <Button key="next" label="Next question" plain onPress={() => void moveOn($)} />
+            </Box>
           </Box>
         </Box>,
       )
