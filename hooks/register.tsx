@@ -1,14 +1,16 @@
 // quizwhile: a multiple-choice question in the band above the prompt while
-// Claude works, about what Claude is doing. It steps aside when Claude needs
+// Claude works, about the code Claude is reading and writing. It steps aside when Claude needs
 // you and keeps an unanswered question for the next turn.
 
 import type { EngineInterface, Register } from 'claude-code'
 
-import { BANK, SYSTEM, parseQuiz, type Quiz } from './quiz'
+import { SYSTEM, bankFor, parseQuiz, type Quiz } from './quiz'
 
 const DROP_IN_DELAY_MS = 2000
 const GENERATE_TIMEOUT_MS = 15000
-const MAX_ACTIVITY = 10
+const MAX_FILES = 10
+const MAX_SNIPPETS = 4
+const MAX_SNIPPET_CHARS = 1200
 const MAX_MISSED = 20
 // How often a missed question comes back in place of a new one
 const REVIEW_CHANCE = 0.3
@@ -34,10 +36,10 @@ let wasRight = false
 let upcoming: Promise<Quiz | null> | null = null
 let dropIn: { cancel: () => void } | null = null
 
-// What Claude is working on, for the model that writes questions
-let request = ''
-let activity: string[] = []
-let lastSnippet = ''
+// The code Claude has read or written this session, for the model that
+// writes questions: kept across prompts so a new turn starts with context
+let files: string[] = []
+let snippets: { path: string; code: string }[] = []
 let missed: Quiz[] = []
 const recentTopics: string[] = []
 
@@ -52,9 +54,8 @@ function reset() {
   wasRight = false
   upcoming = null
   dropIn = null
-  request = ''
-  activity = []
-  lastSnippet = ''
+  files = []
+  snippets = []
   recentTopics.length = 0
 }
 
@@ -63,16 +64,23 @@ function show($: EngineInterface, next: Phase) {
   $.ui.invalidate('ui.render')
 }
 
-function note(line: string) {
-  activity = [...activity, line].slice(-MAX_ACTIVITY)
+function noteFile(path: string) {
+  files = [...files.filter((f) => f !== path), path].slice(-MAX_FILES)
 }
 
+function noteCode(path: string, code: string) {
+  const trimmed = code.trim()
+  if (!trimmed) return
+  const snippet = { path, code: trimmed.slice(0, MAX_SNIPPET_CHARS) }
+  snippets = [...snippets.filter((s) => s.path !== path), snippet].slice(-MAX_SNIPPETS)
+}
+
+// Questions are only about code, so with none seen yet the bank answers
 async function generate($: EngineInterface): Promise<Quiz | null> {
-  if (!request && activity.length === 0) return null
+  if (snippets.length === 0) return null
   const prompt = [
-    `The person asked: ${request || '(unknown)'}`,
-    `What the assistant has done so far:\n${activity.map((a) => '- ' + a).join('\n') || '- nothing yet'}`,
-    lastSnippet ? `Latest code it wrote:\n${lastSnippet}` : '',
+    `Files in this project: ${files.join(', ')}`,
+    ...snippets.map((s) => `Code from ${s.path}:\n${s.code}`),
     recentTopics.length ? `Avoid these topics, already asked: ${recentTopics.join(', ')}` : '',
   ]
     .filter(Boolean)
@@ -94,13 +102,19 @@ async function generate($: EngineInterface): Promise<Quiz | null> {
 }
 
 function fromBank(): Quiz {
-  const fresh = BANK.filter((q) => !recentTopics.includes(q.topic))
-  const pool = fresh.length ? fresh : BANK
+  const bank = bankFor(files)
+  const fresh = bank.filter((q) => !recentTopics.includes(q.topic))
+  const pool = fresh.length ? fresh : bank
   return pool[Math.floor(Math.random() * pool.length)]!
 }
 
+// One that comes back empty is dropped, so a later call can try again with
+// the code seen since
 function prefetch($: EngineInterface) {
-  upcoming ??= generate($)
+  upcoming ??= generate($).then((quiz) => {
+    if (!quiz) upcoming = null
+    return quiz
+  })
 }
 
 async function nextQuestion($: EngineInterface): Promise<Quiz> {
@@ -193,15 +207,6 @@ export const register: Register = (on) => {
     return { text: 'quizwhile is on: a question appears above the prompt while Claude works.' }
   })
 
-  on('prompt.submit', async ($, e, next) => {
-    if (!e.isMeta && !e.command && e.text.trim()) {
-      request = e.text.trim().slice(0, 500)
-      activity = []
-      lastSnippet = ''
-    }
-    return next(e)
-  })
-
   on('turn.start', async ($, e, next) => {
     if (e.agentId) return next(e)
     isTurnRunning = true
@@ -228,15 +233,23 @@ export const register: Register = (on) => {
   on('tool.call', async ($, e, next) => {
     if (!e.agentId) {
       if (e.tool === 'AskUserQuestion') needsYou($)
-      const input = e as unknown as Record<string, unknown>
-      const path = typeof input.file_path === 'string' ? input.file_path : null
-      if (path) note(`${e.tool} ${path}`)
-      else if (typeof input.command === 'string') note(`ran \`${input.command.slice(0, 120)}\``)
-      else note(`used ${String(e.tool)}`)
-      const snippet = typeof input.new_string === 'string' ? input.new_string : typeof input.content === 'string' ? input.content : null
-      if (snippet) lastSnippet = snippet.slice(0, 800)
     }
+    const input = e as unknown as Record<string, unknown>
+    const path = !e.agentId && typeof input.file_path === 'string' ? input.file_path : null
     const result = await next(e)
+    if (path) {
+      noteFile(path)
+      // What Claude wrote, else what it read: either is the person's own code
+      const written = typeof input.new_string === 'string' ? input.new_string : typeof input.content === 'string' ? input.content : null
+      // Read numbers each line ("   12\t..."); the numbers are not code
+      const read = e.tool === 'Read' && !result.isError ? result.text?.replace(/^ *\d+\t/gm, '') : undefined
+      const code = written ?? read
+      if (code) {
+        noteCode(path, code)
+        // The first question may have gone to the bank for want of code
+        if (isTurnRunning) prefetch($)
+      }
+    }
     // An answered prompt lets Claude carry on
     carryOn($)
     return result

@@ -2,23 +2,29 @@
 
 A Claude Code mod that quizzes you while Claude works. A few seconds into a
 turn, a multiple-choice question appears in the band above the prompt, about
-what Claude is building right now. Answer it, skip it or collapse it; it steps
-aside when Claude needs you and keeps an unanswered question for the next turn.
+your code. Answer it, skip it or collapse it; it steps aside when Claude needs
+you and keeps an unanswered question for the next turn.
 
 ![quizwhile in Claude Code Desktop](docs/preview.png)
 
-Questions are written by Haiku from your request and Claude's recent tool
-calls. When none is ready in time, one comes from a small built-in bank.
+Questions are written by Haiku from the code Claude reads and writes in your
+project: the language as your code uses it, what a function or step does, and
+how the code connects to outside services. Before any code has been seen, a
+question comes from a small built-in bank (Python basics in a Python project).
 Questions you miss come back later.
 
 This first version draws in Claude Code Desktop only.
 
 ## Install
 
-In Claude Code, run:
+In Claude Code, add this repository as a marketplace, then install from it:
 
 ```
-/plugin install quizwhile --marketplace ediprodan/quizwhile
+/plugin marketplace add EdiProdan/quizwhile
+```
+
+```
+/plugin install quizwhile@quizwhile
 ```
 
 Then start a new session. The quiz is on by default.

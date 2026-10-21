@@ -11,8 +11,9 @@ export type Quiz = {
   hint?: string
 }
 
-// Asked when no question about Claude's own work is ready in time
-export const BANK: Quiz[] = [
+// Asked when no question about the project's code is ready, in a project
+// that is not Python
+const GENERAL_BANK: Quiz[] = [
   {
     topic: 'variables',
     question: 'What does `const` promise about a variable?',
@@ -134,15 +135,131 @@ export function parseQuiz(text: string): Quiz | null {
   }
 }
 
-export const SYSTEM = `You write one multiple-choice quiz question that helps a person understand the code an AI assistant is writing for them right now.
+// Asked in a Python project when no question about its code is ready
+const PYTHON_BANK: Quiz[] = [
+  {
+    topic: 'dict',
+    question: 'Which line makes an empty dictionary?',
+    options: ['`x = []`', '`x = {}`', '`x = ()`'],
+    correct: 1,
+    explanation: '`{}` is an empty dict. `[]` is an empty list and `()` an empty tuple. `dict()` also works.',
+  },
+  {
+    topic: 'dict get',
+    question: 'What does `prices.get("BTC", 0)` return when "BTC" is not a key?',
+    options: ['It raises `KeyError`', '`None`', '`0`'],
+    correct: 2,
+    explanation: '`.get` returns its second argument when the key is missing. `prices["BTC"]` would raise `KeyError`.',
+  },
+  {
+    topic: 'set',
+    question: 'What does `set()` give you that a list does not?',
+    options: ['Each value at most once, with fast `in` checks', 'Values kept in sorted order', 'Values that can never change'],
+    correct: 0,
+    explanation: 'A set drops duplicates and checks membership in constant time. It keeps no order.',
+  },
+  {
+    topic: 'mutable default',
+    question: 'Why is `def add(item, items=[])` a known trap?',
+    options: ['Lists cannot be default values', 'The same list is shared by every call', 'It makes `items` read-only'],
+    correct: 1,
+    explanation: 'Defaults are made once, when the function is defined, so every call appends to the same list. Use `items=None` and create the list inside.',
+  },
+  {
+    topic: 'list comprehension',
+    question: 'What is `[p * 2 for p in prices if p > 10]`?',
+    options: ['Every price doubled', 'The prices over 10, doubled', 'The count of prices over 10'],
+    correct: 1,
+    explanation: 'The `if` filters first, then `p * 2` is applied to each item that passed.',
+  },
+  {
+    topic: 'with',
+    question: 'What does `with open(path) as f:` guarantee?',
+    options: ['The file is closed when the block ends, even on an error', 'The file is opened faster', 'The file is locked for other programs'],
+    correct: 0,
+    explanation: 'A `with` block calls the context manager’s exit code on the way out, so the file closes even if something raises.',
+  },
+  {
+    topic: 'exceptions',
+    question: 'Why is a bare `except:` usually a bad idea?',
+    options: ['It is a syntax error in Python 3', 'It only catches `ValueError`', 'It swallows every error, even Ctrl+C and typos'],
+    correct: 2,
+    explanation: 'A bare `except` catches everything, including `KeyboardInterrupt` and bugs you would want to see. Catch the specific error instead.',
+  },
+  {
+    topic: 'imports',
+    question: 'What does `if __name__ == "__main__":` do?',
+    options: ['Runs the block only when the file is run directly', 'Runs the block only once per day', 'Makes the file importable'],
+    correct: 0,
+    explanation: 'When the file is imported, `__name__` is the module name, so the block is skipped. It runs only for `python file.py`.',
+  },
+  {
+    topic: 'f-strings',
+    question: 'What does `f"{price:.2f}"` print for `price = 3.14159`?',
+    options: ['`3.14159`', '`3.14`', '`3.1`'],
+    correct: 1,
+    explanation: '`.2f` formats the number as fixed-point with two decimals.',
+  },
+  {
+    topic: 'none',
+    question: 'Why write `if x is None:` instead of `if not x:`?',
+    options: ['`is` is faster to type', '`not x` is also true for `0`, `""` and `[]`', '`not x` raises an error on `None`'],
+    correct: 1,
+    explanation: '`not x` treats every falsy value the same. `is None` checks for exactly `None`, so a real `0` is not mistaken for missing.',
+  },
+  {
+    topic: 'async',
+    question: 'In Python, what does `await` need to be inside of?',
+    options: ['A `class`', 'A `with` block', 'An `async def` function'],
+    correct: 2,
+    explanation: '`await` only works inside a coroutine, which is a function defined with `async def`.',
+  },
+  {
+    topic: 'type hints',
+    question: 'What happens at run time if you pass a string to `def f(n: int)`?',
+    options: ['Python raises `TypeError` right away', 'Nothing: hints are not checked when the code runs', 'Python converts it to an int'],
+    correct: 1,
+    explanation: 'Type hints are for readers and tools like mypy. Python itself does not enforce them.',
+  },
+  {
+    topic: 'slicing',
+    question: 'What is `candles[-3:]`?',
+    options: ['The last three items', 'Everything except the last three', 'The third item from the end'],
+    correct: 0,
+    explanation: 'A negative start counts from the end, and an empty stop goes to the end of the list.',
+  },
+  {
+    topic: 'venv',
+    question: 'Why use a virtual environment (`venv`)?',
+    options: ['It makes Python run faster', 'It gives the project its own installed packages', 'It hides the code from git'],
+    correct: 1,
+    explanation: 'A venv keeps this project’s packages and versions apart from other projects and the system Python.',
+  },
+]
+
+// Python unless the files seen so far are all in some other language
+export function bankFor(files: readonly string[]): Quiz[] {
+  const code = files.filter((f) => /\.(py|ts|tsx|js|jsx|mjs|go|rs|java|rb|swift|kt|cs|cpp|c|php)$/.test(f))
+  const isPython = code.length === 0 || code.some((f) => f.endsWith('.py'))
+  return isPython ? PYTHON_BANK : GENERAL_BANK
+}
+
+export const SYSTEM = `You write one multiple-choice quiz question that tests whether a person understands their own code, using the code below from their project.
+
+Ask about one of these, and nothing else:
+- the language itself, as used in this code (for example: what initialises this dict, what this comprehension returns, why this is a generator)
+- what a specific function, class, step or module in the code does
+- how the code connects to things outside it (an API, a broker, a database, a file, storage), as the code shows
+
+Never ask about the AI assistant, its process, planning, tools, prompts, agents, tasks, handoffs, documents, or what it should do next. Never ask about anything the code does not show.
 
 Rules:
-- Ask about a concept, a reason or a consequence in what the assistant is doing, never about syntax trivia.
+- Name the real function, variable or file, in backticks, so the person knows where to look ("In \`load_prices\`, ...").
 - Exactly 3 options, one correct, the wrong ones plausible. Each option under 60 characters.
-- The question under 140 characters. Use backticks for code names.
-- "code" is optional: at most 6 short lines from the work, only when the question is about that snippet.
+- The question under 140 characters.
+- "code" is optional: at most 6 short lines copied from the code below, only when the question is about that snippet.
 - "explanation" is 1-2 plain sentences on why the answer is right.
-- "topic" is one or two lowercase words.
+- "topic" is one or two lowercase words naming the concept or the function.
 
 Reply with JSON only, no prose and no fence:
 {"topic": "...", "question": "...", "code": "...", "options": ["...", "...", "..."], "correct": 0, "explanation": "...", "hint": "..."}`
